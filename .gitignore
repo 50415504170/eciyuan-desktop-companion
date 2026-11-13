@@ -1,0 +1,9 @@
+/build/
+/dist/
+*.log
+*.jpg
+*.png
+*.xlog
+*.pb
+*.key
+
