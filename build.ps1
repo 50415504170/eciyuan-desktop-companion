@@ -21,7 +21,7 @@ try {
     [IO.File]::WriteAllText((Join-Path $build 'manage.ps1'), [IO.File]::ReadAllText((Join-Path $folder 'src\manage.ps1')), $utf8)
     & $resources --preprocessor=gcc.exe --preprocessor-arg=-E --preprocessor-arg=-xc --preprocessor-arg=-DRC_INVOKED -I . -i ../src/resources.rc -o resources.o
     if ($LASTEXITCODE -ne 0) { throw 'Resource build failed' }
-    & $compiler -std=gnu++11 -O2 -static -s -municode -mwindows -o ../dist/EciyuanDesktopCompanion.exe ../src/launcher.cpp resources.o -luser32 -lgdi32 -lshell32 -lcomdlg32 -lole32
+    & $compiler -std=gnu++11 -O2 -static -s -municode -mwindows -o ../dist/EciyuanDesktopCompanion.exe ../src/launcher.cpp resources.o -luser32 -lgdi32 -lgdiplus -lshell32 -lcomdlg32 -lole32
     if ($LASTEXITCODE -ne 0) { throw 'Launcher build failed' }
 } finally { $env:PATH = $previousPath; Pop-Location }
 Get-FileHash -LiteralPath (Join-Path $dist 'EciyuanDesktopCompanion.exe') -Algorithm SHA256

@@ -1,13 +1,19 @@
+#define _WIN32_WINNT 0x0600
 #include <windows.h>
 #include <commdlg.h>
 #include <shellapi.h>
 #include <shlobj.h>
 #include <string>
 #include <vector>
+#include <gdiplus.h>
+#include <cmath>
 
-static HWND pathEdit, statusText, enableButton, inspectButton, restoreButton;
+static HWND pathEdit, statusText, enableButton, inspectButton, restoreButton, pauseButton, browseButton;
 static HANDLE operation;
 static std::wstring runtime;
+static HFONT bodyFont;
+static HBRUSH fieldBrush;
+static float uiScale = 1.0f;
 
 static bool Resource(int identifier, const BYTE** data, DWORD* size) {
     HMODULE module = GetModuleHandleW(nullptr);
@@ -97,17 +103,19 @@ static std::wstring ReadReport() {
     return text;
 }
 
+static void SetStatus(const wchar_t* text);
+
 static void StartOperation(HWND parent, const wchar_t* action) {
     if (operation) return;
     wchar_t path[MAX_PATH];
     GetWindowTextW(pathEdit, path, MAX_PATH);
     if (!*path) {
-        SetWindowTextW(statusText, L"请先选择鹅次元安装目录中的 Eciyuan.exe。 ");
+        SetStatus(L"请先选择鹅次元安装目录中的 Eciyuan.exe。 ");
         return;
     }
     runtime = RuntimePath(wcscmp(action, L"Inspect") != 0);
     if (runtime.empty()) {
-        SetWindowTextW(statusText, L"无法定位运行目录。");
+        SetStatus(L"无法定位运行目录。");
         return;
     }
     wchar_t executable[MAX_PATH];
@@ -121,87 +129,21 @@ static void StartOperation(HWND parent, const wchar_t* action) {
     launch.lpParameters = parameters.c_str();
     launch.nShow = SW_HIDE;
     if (!ShellExecuteExW(&launch)) {
-        SetWindowTextW(statusText, L"操作未启动（可能取消了管理员提示）。");
+        SetStatus(L"操作未启动（可能取消了管理员提示）。");
         return;
     }
     operation = launch.hProcess;
     EnableWindow(enableButton, FALSE);
     EnableWindow(inspectButton, FALSE);
     EnableWindow(restoreButton, FALSE);
-    SetWindowTextW(statusText, L"正在处理，请稍候。开启和还原操作会重启鹅次元、断开当前通话。");
+    EnableWindow(pauseButton, FALSE);
+    EnableWindow(browseButton, FALSE);
+    EnableWindow(pathEdit, FALSE);
+    SetStatus(wcscmp(action, L"Inspect") == 0 ? L"正在校验程序文件…" : L"正在处理，请稍候…");
+    InvalidateRect(parent, nullptr, FALSE);
 }
 
-static HWND Control(HWND parent, const wchar_t* type, const wchar_t* text, DWORD style,
-                    int x, int y, int width, int height, int identifier = 0) {
-    HWND control = CreateWindowExW(0, type, text, WS_CHILD | WS_VISIBLE | style,
-        x, y, width, height, parent, (HMENU)(intptr_t)identifier, nullptr, nullptr);
-    SendMessageW(control, WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
-    return control;
-}
-
-static LRESULT CALLBACK LauncherProc(HWND window, UINT message, WPARAM word, LPARAM parameter) {
-    if (message == WM_CREATE) {
-        Control(window, L"STATIC", L"全屏陪玩  0.1.0 · 实验版", 0, 24, 20, 620, 28);
-        Control(window, L"STATIC", L"支持鹅次元 0.1.15.624 / Windows x64。共享小窗口所在的单个显示器。", 0, 24, 55, 620, 34);
-        pathEdit = Control(window, L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL | WS_TABSTOP, 24, 98, 500, 28);
-        Control(window, L"BUTTON", L"选择程序…", BS_PUSHBUTTON | WS_TABSTOP, 540, 96, 112, 32, 10);
-        inspectButton = Control(window, L"BUTTON", L"检测兼容性", BS_PUSHBUTTON | WS_TABSTOP, 24, 147, 140, 42, 11);
-        enableButton = Control(window, L"BUTTON", L"开启 / 重启陪玩", BS_PUSHBUTTON | WS_TABSTOP, 184, 147, 150, 42, 12);
-        Control(window, L"BUTTON", L"停止共享画面", BS_PUSHBUTTON | WS_TABSTOP, 354, 147, 140, 42, 13);
-        restoreButton = Control(window, L"BUTTON", L"还原并重启", BS_PUSHBUTTON | WS_TABSTOP, 514, 147, 140, 42, 14);
-        Control(window, L"STATIC", L"开启和还原会重启鹅次元，中断当前通话。停止共享只隐藏采集窗口。\n共享期间，聊天、通知、浏览器和游戏画面均可能上传至鹅次元云端。\n本工具不提供 AI 服务。模型识别、语音、费用及抽帧频率由鹅次元决定。", 0, 24, 214, 630, 78);
-        statusText = Control(window, L"STATIC", L"就绪。请先检测兼容性。", SS_LEFT, 24, 316, 630, 66);
-        wchar_t candidate[MAX_PATH];
-        for (wchar_t drive = L'C'; drive <= L'Z'; ++drive) {
-            swprintf(candidate, MAX_PATH, L"%c:\\Eciyuan\\0.1.15.624\\Eciyuan.exe", drive);
-            if (GetFileAttributesW(candidate) != INVALID_FILE_ATTRIBUTES) {
-                SetWindowTextW(pathEdit, candidate);
-                break;
-            }
-        }
-        SetTimer(window, 1, 500, nullptr);
-        return 0;
-    }
-    if (message == WM_COMMAND) {
-        switch (LOWORD(word)) {
-        case 10: {
-            wchar_t file[MAX_PATH] = L"";
-            OPENFILENAMEW picker = {sizeof(picker)};
-            picker.hwndOwner = window;
-            picker.lpstrFilter = L"鹅次元主程序\0Eciyuan.exe\0";
-            picker.lpstrFile = file;
-            picker.nMaxFile = MAX_PATH;
-            picker.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
-            if (GetOpenFileNameW(&picker)) SetWindowTextW(pathEdit, file);
-            break;
-        }
-        case 11: StartOperation(window, L"Inspect"); break;
-        case 12: StartOperation(window, L"Enable"); break;
-        case 13: {
-            HWND anchor = FindWindowW(L"EciyuanDesktopCompanionAnchor", nullptr);
-            if (anchor) PostMessageW(anchor, WM_APP + 1, 0, 0);
-            SetWindowTextW(statusText, L"已请求暂停共享画面。保留入口进程，不主动挂断；鹅次元通常约 1 秒后停止取帧。");
-            break;
-        }
-        case 14: StartOperation(window, L"Restore"); break;
-        }
-        return 0;
-    }
-    if (message == WM_TIMER && operation && WaitForSingleObject(operation, 0) == WAIT_OBJECT_0) {
-        CloseHandle(operation);
-        operation = nullptr;
-        EnableWindow(enableButton, TRUE);
-        EnableWindow(inspectButton, TRUE);
-        EnableWindow(restoreButton, TRUE);
-        SetWindowTextW(statusText, ReadReport().c_str());
-        return 0;
-    }
-    if (message == WM_DESTROY) {
-        if (operation) CloseHandle(operation);
-        PostQuitMessage(0);
-    }
-    return DefWindowProcW(window, message, word, parameter);
-}
+#include "launcher_ui.h"
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     int count;
@@ -227,22 +169,25 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
         }
         return 0;
     }
+    InitializeVisuals();
     WNDCLASSW definition = {};
     definition.lpfnWndProc = LauncherProc;
     definition.hInstance = instance;
-    definition.lpszClassName = L"EciyuanDesktopCompanionLauncher";
-    definition.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    definition.lpszClassName = L"EciyuanDesktopCompanionLauncherV3";
+    definition.hbrBackground = nullptr;
     definition.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    if (!RegisterClassW(&definition)) return 1;
+    if (!RegisterClassW(&definition)) return 10;
     HWND window = CreateWindowExW(0, definition.lpszClassName, L"全屏陪玩 · Eciyuan Desktop Companion",
-        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, CW_USEDEFAULT, CW_USEDEFAULT,
-        700, 440, nullptr, nullptr, instance, nullptr);
-    if (!window) return 1;
+        WS_POPUP | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN, CW_USEDEFAULT, CW_USEDEFAULT,
+        Pixels(620), Pixels(566), nullptr, nullptr, instance, nullptr);
+    if (!window) return (int)GetLastError();
     ShowWindow(window, SW_SHOW);
     MSG message;
     while (GetMessageW(&message, nullptr, 0, 0) > 0) {
+        if (IsDialogMessageW(window, &message)) continue;
         TranslateMessage(&message);
         DispatchMessageW(&message);
     }
+    GdiplusShutdown(graphicsToken);
     return 0;
 }
